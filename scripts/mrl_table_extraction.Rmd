@@ -1,0 +1,107 @@
+---
+title: "Get MRLs from 37/2010"
+output: html_document
+date: "2023-11-29"
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(rvest)
+```
+
+```{r}
+# latest version of Annex 37/2010
+mrl_annex <- read_html("https://eur-lex.europa.eu/legal-content/EN/TXT/HTML/?uri=CELEX:02010R0037-20231112")
+# all tables on website
+tbls <- html_nodes(mrl_annex, "table")
+
+# html_table(tbls) # find the right table
+```
+
+```{r}
+# Table 2, prohibited substances
+prohibited <- html_table(tbls[5], header = T)[[1]]
+names(prohibited) <- c("substance", "MRL")
+prohibited <- filter(prohibited, !grepl(pattern = "▼", substance))
+#write.csv(prohibited, file = "../data/prohibited_substances.csv", row.names = F)
+```
+
+```{r}
+# Table 1, MRLs
+mrl_table1 <- html_table(tbls[4], header = T)[[1]]
+names(mrl_table1) <- c("substance", "marker_residue", "species", "MRL", "target_tissue", "other_provisions", "therapeutic_class", "x","y","z")
+```
+
+```{r}
+# MRL table needs to be cleaned up - remove the rows indicating when MRL table was changed
+mrl_table1 <- filter(mrl_table1, is.na(x), 
+                     !grepl(pattern = "▼", substance))%>%
+  select(-x, -y, -z)
+```
+```{r}
+# make separate rows for each MRL-target tissue combination
+mrl_table_tst <- mrl_table1%>%
+  separate_longer_delim(c(MRL, target_tissue), delim = "\n")%>%
+  separate_longer_delim(c(species), delim = "\n")%>%
+  mutate(across(where(is.character), trimws))%>%
+  mutate(across(c(MRL, target_tissue), ~gsub("\\.", "", .x)))%>% # remove unneeded periods
+  mutate(MRL = gsub(",", ".", MRL)) # in MRL values, replace , with . as decimal
+```
+```{r}
+# pull the numeric values out of MRL string
+MRL_nums <- str_extract_all(mrl_table_tst$MRL, pattern = "\\d+\\.*\\d*")
+MRL_nums <- lapply(MRL_nums, function(x){paste0(x, collapse = '')})%>%unlist()%>%as.numeric(.)
+
+# add MRL values and units as new variables
+mrl_table_tst <- mrl_table_tst%>%
+  mutate(MRL_value = MRL_nums,
+         MRL_units = gsub(pattern = "[0-9]", "", mrl_table_tst$MRL))%>%
+  mutate(MRL_units = if_else(grepl("no", tolower(MRL_units)), NA_character_, MRL_units))%>%
+  mutate(MRL_units = gsub("\\.", "", MRL_units))%>%
+  mutate(MRL_units = trimws(MRL_units, whitespace = "[\\h\\v]"))
+
+# clean up target tissue variable
+mrl_table_tst <- mrl_table_tst%>%
+  mutate(target_tissue_comb = tolower(target_tissue))%>%
+  mutate(target_tissue_comb = case_when(
+    grepl("not applicable", target_tissue_comb) ~ NA_character_,
+    grepl("skin and fat", target_tissue_comb) ~ "skin_fat",
+    grepl("muscle and skin", target_tissue_comb) ~ "skin_muscle",
+    .default = as.character(target_tissue_comb)
+      )
+    )
+
+mrl_table_tst <- mrl_table_tst%>%
+  filter(species != "")%>% # remove places with blank for species
+  filter(substance != "")
+```
+```{r}
+write.csv(mrl_table_tst, file = "../data/mrl_table.csv", row.names = F)
+```
+
+```{r}
+# table(mrl_table_tst$species) # species var is a mess
+```
+
+```{r}
+# ggplot(filter(mrl_table_tst, !is.na(MRL_value)), aes(x = MRL_value)) +
+#   geom_histogram(bins = 30) +
+#   scale_x_log10() + facet_wrap(~target_tissue_comb)
+```
+
+```{r}
+# ggplot(filter(mrl_table_tst, target_tissue_comb %in% c("fat", "kidney", "liver", "muscle")),
+#        aes(x = target_tissue_comb, y = MRL_value)) +
+#   geom_boxplot() +
+#   geom_jitter() +
+#   scale_y_log10()
+```
+
+```{r}
+# m1 <- (glm(log(MRL_value) ~ substance-1 + target_tissue_comb, data = mrl_table_tst))
+# summary(m1)
+```
+
+```{r}
+# sort(coef(m1)[grepl("substance", names(coef(m1)))])
+```
